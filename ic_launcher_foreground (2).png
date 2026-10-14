@@ -1,0 +1,148 @@
+package com.personal.gymtimer;
+
+import android.content.Context;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+
+/**
+ * Timbre agradable: una campanita suave de dos notas (La5 → Mi6, una quinta ascendente).
+ * Se sintetiza una sola vez (senoides con armónicos y caída exponencial) y se reproduce con AudioTrack.
+ * Baja un poco la música de fondo mientras suena y la devuelve después.
+ * Los mismos parámetros se usan en la versión web (index.html) para que suene igual en ambos lados.
+ */
+final class GymTimerChime {
+    private static final int SR = 44100;
+    private static final double LEN = 1.6;                    // segundos totales
+    private static final double[] NOTE_HZ = {880.0, 1318.51}; // La5, Mi6
+    private static final double[] NOTE_AT = {0.0, 0.17};      // inicio de cada nota
+    private static final double[] NOTE_AMP = {0.55, 0.65};
+    private static final double[] PART_RATIO = {1.0, 2.0, 2.76};  // fundamental, octava, parcial "de campana"
+    private static final double[] PART_AMP = {1.0, 0.25, 0.07};
+    private static final double[] PART_DECAY = {1.0, 0.5, 0.25};  // los agudos se apagan antes
+    private static final double TAU = 0.30;                   // caída de la nota (s)
+
+    private static short[] pcm;
+
+    private final Context ctx;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private AudioTrack track;
+    private AudioFocusRequest focusRequest;
+    private final AudioManager.OnAudioFocusChangeListener focusListener = new AudioManager.OnAudioFocusChangeListener() {
+        @Override public void onAudioFocusChange(int change) {}
+    };
+    private final Runnable releaseRunnable = new Runnable() {
+        @Override public void run() { release(); }
+    };
+
+    GymTimerChime(Context context) {
+        this.ctx = context.getApplicationContext();
+    }
+
+    private static synchronized short[] samples() {
+        if (pcm != null) return pcm;
+        int n = (int) (SR * LEN);
+        double[] mix = new double[n];
+        double peak = 1e-9;
+        for (int i = 0; i < n; i++) {
+            double v = 0;
+            for (int k = 0; k < NOTE_HZ.length; k++) {
+                double t = (double) i / SR - NOTE_AT[k];
+                if (t < 0) continue;
+                double attack = 1.0 - Math.exp(-t / 0.005);
+                for (int p = 0; p < PART_RATIO.length; p++) {
+                    double env = attack * Math.exp(-t / (TAU * PART_DECAY[p]));
+                    v += NOTE_AMP[k] * PART_AMP[p] * env * Math.sin(2 * Math.PI * NOTE_HZ[k] * PART_RATIO[p] * t);
+                }
+            }
+            mix[i] = v;
+            double a = Math.abs(v);
+            if (a > peak) peak = a;
+        }
+        short[] out = new short[n];
+        double scale = 0.9 * 32767.0 / peak;
+        int fade = (int) (SR * 0.03);
+        for (int i = 0; i < n; i++) {
+            double g = i >= n - fade ? (double) (n - i) / fade : 1.0;
+            out[i] = (short) Math.round(mix[i] * scale * g);
+        }
+        pcm = out;
+        return pcm;
+    }
+
+    /** Reproduce el timbre. volumePct va de 0 a 100 (misma curva cuadrática que la barra de la app). */
+    void play(int volumePct) {
+        if (volumePct <= 0) return;
+        release();
+        try {
+            short[] s = samples();
+            AudioAttributes attrs = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build();
+            AudioFormat fmt = new AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(SR)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build();
+            track = new AudioTrack.Builder()
+                .setAudioAttributes(attrs)
+                .setAudioFormat(fmt)
+                .setBufferSizeInBytes(s.length * 2)
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .build();
+            track.write(s, 0, s.length);
+            float gain = (float) Math.pow(Math.max(0, Math.min(100, volumePct)) / 100.0, 2);
+            track.setVolume(gain);
+            requestFocus(attrs);
+            track.play();
+            handler.postDelayed(releaseRunnable, (long) (LEN * 1000) + 150);
+        } catch (Exception e) {
+            release();
+        }
+    }
+
+    private void requestFocus(AudioAttributes attrs) {
+        try {
+            AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return;
+            if (Build.VERSION.SDK_INT >= 26) {
+                focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                    .setAudioAttributes(attrs)
+                    .setOnAudioFocusChangeListener(focusListener)
+                    .build();
+                am.requestAudioFocus(focusRequest);
+            } else {
+                am.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void abandonFocus() {
+        try {
+            AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return;
+            if (Build.VERSION.SDK_INT >= 26) {
+                if (focusRequest != null) am.abandonAudioFocusRequest(focusRequest);
+                focusRequest = null;
+            } else {
+                am.abandonAudioFocus(focusListener);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    void release() {
+        handler.removeCallbacks(releaseRunnable);
+        if (track != null) {
+            try { track.stop(); } catch (Exception ignored) {}
+            try { track.release(); } catch (Exception ignored) {}
+            track = null;
+        }
+        abandonFocus();
+    }
+}

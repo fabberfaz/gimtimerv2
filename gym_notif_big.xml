@@ -1,0 +1,396 @@
+package com.personal.gymtimer;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
+import android.os.Build;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.os.SystemClock;
+import android.provider.Settings;
+import android.view.View;
+import android.widget.RemoteViews;
+import androidx.core.app.NotificationCompat;
+
+/**
+ * Cronómetro y cuentas atrás en segundo plano, con una notificación a medida:
+ * tiempo que corre solo (Chronometer del sistema), cuenta atrás con barra de progreso,
+ * Play/Pausa, Reiniciar y botones 1:00 / 1:30 / 2:00. El timbre suena desde aquí.
+ */
+public class GymTimerForegroundService extends Service {
+    public static final String PREFS = "gym_timer_background";
+    public static final String ACTION_SYNC = "com.personal.gymtimer.SYNC";
+    private static final String CHANNEL = "gym_timer_lock_v2";      // canal nuevo: la importancia de uno ya creado no se puede subir
+    private static final String OLD_CHANNEL = "gym_timer_running";
+    private static final int NOTIFICATION_ID = 7301;
+    private static final int GREEN = 0xFF1FB36B;
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private SharedPreferences prefs;
+    private GymTimerChime chime;
+    private PowerManager.WakeLock wakeLock;
+    private boolean startedForeground = false;
+    private long lastCdSecShown = -1;
+    private long lastBeepAt = 0L;
+
+    private final Runnable ticker = new Runnable() {
+        @Override public void run() {
+            if (!prefs.getBoolean("active", false)) { shutdown(); return; }
+            checkCountdown();
+            if (!prefs.getBoolean("active", false)) { shutdown(); return; }
+            int secs = prefs.getInt("countdownSecs", 0);
+            long delay = 2000L;
+            if (secs > 0) {
+                long rem = Math.max(0L, prefs.getLong("countdownEndElapsed", 0L) - SystemClock.elapsedRealtime());
+                long left = (rem + 999L) / 1000L;
+                if (left != lastCdSecShown) { lastCdSecShown = left; updateNotification(); }
+                delay = Math.max(5L, Math.min(250L, rem));
+            }
+            updateWakeLock();
+            handler.postDelayed(this, delay);
+        }
+    };
+
+    /** Si el teléfono se reinició, los relojes guardados ya no valen: se descartan. */
+    static void ensureFresh(Context c) {
+        SharedPreferences p = c.getSharedPreferences(PREFS, MODE_PRIVATE);
+        int boot = -1;
+        try { boot = Settings.Global.getInt(c.getContentResolver(), "boot_count", -1); } catch (Exception ignored) {}
+        if (p.getInt("bootCount", -2) != boot) p.edit().clear().putInt("bootCount", boot).apply();
+    }
+
+    @Override public void onCreate() {
+        super.onCreate();
+        ensureFresh(this);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        chime = new GymTimerChime(this);
+        createChannel();
+    }
+
+    @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = intent != null ? intent.getAction() : null;
+        if (ACTION_SYNC.equals(action)) {
+            long now = SystemClock.elapsedRealtime();
+            long elapsed = intent.getLongExtra("elapsedMs", 0L);
+            boolean running = intent.getBooleanExtra("running", false);
+            int secs = intent.getIntExtra("countdownSecs", 0);
+            long remaining = intent.getLongExtra("countdownRemainingMs", 0L);
+            boolean hasElapsed = intent.getBooleanExtra("hasElapsed", false);
+            boolean active = running || secs > 0 || hasElapsed;
+            prefs.edit()
+                .putLong("elapsedBase", elapsed)
+                .putBoolean("running", running)
+                .putLong("swStartElapsed", running ? now : 0L)
+                .putInt("countdownSecs", secs)
+                .putLong("countdownEndElapsed", secs > 0 ? now + remaining : 0L)
+                .putBoolean("rep60", intent.getBooleanExtra("rep60", false))
+                .putBoolean("rep90", intent.getBooleanExtra("rep90", false))
+                .putBoolean("rep120", intent.getBooleanExtra("rep120", false))
+                .putInt("volume", intent.getIntExtra("volume", 70))
+                .putBoolean("active", active)
+                .apply();
+        } else if (action != null) {
+            handleAction(action);
+        }
+
+        boolean active = prefs.getBoolean("active", false);
+        // Si nos arrancaron con startForegroundService hay que llamar a startForeground siempre.
+        if (!startedForeground) startForegroundCompat(buildNotification());
+        if (!active) { shutdown(); return START_NOT_STICKY; }
+        lastCdSecShown = -1;
+        handler.removeCallbacks(finishRunnable);
+        updateNotification();
+        updateWakeLock();
+        handler.removeCallbacks(ticker);
+        handler.post(ticker);
+        return START_STICKY;
+    }
+
+    private void handleAction(String action) {
+        long now = SystemClock.elapsedRealtime();
+        SharedPreferences.Editor e = prefs.edit();
+        if ("TOGGLE".equals(action)) {
+            boolean running = prefs.getBoolean("running", false);
+            if (running) {
+                long start = prefs.getLong("swStartElapsed", 0L);
+                long elapsed = prefs.getLong("elapsedBase", 0L) + (start > 0 ? Math.max(0L, now - start) : 0L);
+                e.putLong("elapsedBase", elapsed).putBoolean("running", false).putLong("swStartElapsed", 0L);
+            } else {
+                e.putBoolean("running", true).putLong("swStartElapsed", now);
+            }
+            e.putBoolean("active", true);
+        } else if ("RESET".equals(action)) {
+            e.putLong("elapsedBase", 0L).putBoolean("running", false).putLong("swStartElapsed", 0L);
+            if (prefs.getInt("countdownSecs", 0) <= 0) e.putBoolean("active", false);
+        } else if (action.startsWith("PRE")) {
+            int secs = 0;
+            try { secs = Integer.parseInt(action.substring(3)); } catch (Exception ignored) {}
+            if (secs > 0) {
+                if (prefs.getInt("countdownSecs", 0) == secs) {
+                    e.putInt("countdownSecs", 0).putLong("countdownEndElapsed", 0L);
+                    boolean keep = prefs.getBoolean("running", false) || elapsedNow() > 0L;
+                    e.putBoolean("active", keep);
+                } else {
+                    e.putInt("countdownSecs", secs).putLong("countdownEndElapsed", now + secs * 1000L).putBoolean("active", true);
+                }
+            }
+        }
+        e.apply();
+    }
+
+    private void checkCountdown() {
+        int secs = prefs.getInt("countdownSecs", 0);
+        long end = prefs.getLong("countdownEndElapsed", 0L);
+        long now = SystemClock.elapsedRealtime();
+        if (secs <= 0 || end <= 0 || now < end) return;
+        chime.play(prefs.getInt("volume", 70));
+        lastBeepAt = SystemClock.elapsedRealtime();
+        SharedPreferences.Editor e = prefs.edit();
+        if (prefs.getBoolean("rep" + secs, false)) {
+            long next = end + secs * 1000L;
+            while (next <= now) next += secs * 1000L;
+            e.putLong("countdownEndElapsed", next);
+        } else {
+            e.putInt("countdownSecs", 0).putLong("countdownEndElapsed", 0L);
+            if (!prefs.getBoolean("running", false) && elapsedNow() <= 0L) e.putBoolean("active", false);
+        }
+        e.apply();
+        lastCdSecShown = -1;
+        if (prefs.getBoolean("active", false)) updateNotification();
+    }
+
+    private long elapsedNow() {
+        long ms = prefs.getLong("elapsedBase", 0L);
+        if (prefs.getBoolean("running", false)) {
+            long start = prefs.getLong("swStartElapsed", 0L);
+            if (start > 0) ms += Math.max(0L, SystemClock.elapsedRealtime() - start);
+        }
+        return ms;
+    }
+
+    private static String fmtClock(long ms) {
+        long sec = ms / 1000L, mins = sec / 60L, hours = mins / 60L;
+        return hours > 0 ? String.format("%d:%02d:%02d", hours, mins % 60, sec % 60)
+            : String.format("%02d:%02d", mins % 60, sec % 60);
+    }
+
+    private static String fmtCd(int secs) {
+        return (secs / 60) + ":" + String.format("%02d", secs % 60);
+    }
+
+    private PendingIntent actionIntent(String action, int requestCode) {
+        Intent i = new Intent(this, GymTimerForegroundService.class);
+        i.setAction(action);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+        return PendingIntent.getService(this, requestCode, i, flags);
+    }
+
+    private RemoteViews buildViews(boolean big) {
+        RemoteViews v = new RemoteViews(getPackageName(), big ? R.layout.gym_notif_big : R.layout.gym_notif_small);
+        long now = SystemClock.elapsedRealtime();
+        boolean running = prefs.getBoolean("running", false);
+        long elapsed = elapsedNow();
+        int secs = prefs.getInt("countdownSecs", 0);
+
+        // Cronómetro
+        v.setTextViewText(R.id.sw_label, running ? "CRONÓMETRO · EN MARCHA" : (elapsed > 0 ? "CRONÓMETRO · EN PAUSA" : "CRONÓMETRO"));
+        if (running) {
+            v.setViewVisibility(R.id.sw_chrono, View.VISIBLE);
+            v.setViewVisibility(R.id.sw_static, View.GONE);
+            v.setChronometer(R.id.sw_chrono, now - elapsed, null, true);
+        } else {
+            // En pausa se muestra texto fijo: un Chronometer detenido puede mostrar la hora equivocada al volver a dibujarse.
+            v.setViewVisibility(R.id.sw_chrono, View.GONE);
+            v.setViewVisibility(R.id.sw_static, View.VISIBLE);
+            v.setTextViewText(R.id.sw_static, fmtClock(elapsed));
+        }
+        v.setImageViewResource(R.id.btn_toggle, running ? R.drawable.ic_pause : R.drawable.ic_play);
+        v.setContentDescription(R.id.btn_toggle, running ? "Pausar" : (elapsed > 0 ? "Continuar" : "Iniciar"));
+        v.setContentDescription(R.id.btn_reset, "Reiniciar");
+        v.setOnClickPendingIntent(R.id.btn_toggle, actionIntent("TOGGLE", 1));
+        v.setOnClickPendingIntent(R.id.btn_reset, actionIntent("RESET", 2));
+
+        // Cuenta atrás
+        if (secs > 0) {
+            long rem = Math.max(0L, prefs.getLong("countdownEndElapsed", 0L) - now);
+            v.setViewVisibility(R.id.cd_box, View.VISIBLE);
+            v.setTextViewText(R.id.cd_label, prefs.getBoolean("rep" + secs, false) ? "CADA " + fmtCd(secs) : "CUENTA ATRÁS");
+            v.setChronometer(R.id.cd_chrono, now + rem, null, true);
+            if (Build.VERSION.SDK_INT >= 24) v.setChronometerCountDown(R.id.cd_chrono, true);
+        } else {
+            v.setViewVisibility(R.id.cd_box, View.GONE);
+        }
+
+        if (big) {
+            if (secs > 0) {
+                long total = secs * 1000L;
+                long rem = Math.max(0L, prefs.getLong("countdownEndElapsed", 0L) - now);
+                int progress = (int) Math.max(0L, Math.min(1000L, 1000L - (rem * 1000L) / total));
+                v.setViewVisibility(R.id.cd_progress, View.VISIBLE);
+                v.setProgressBar(R.id.cd_progress, 1000, progress, false);
+            } else {
+                v.setViewVisibility(R.id.cd_progress, View.GONE);
+            }
+            int[] ids = {R.id.btn_p60, R.id.btn_p90, R.id.btn_p120};
+            int[] values = {60, 90, 120};
+            for (int i = 0; i < ids.length; i++) {
+                boolean on = secs == values[i];
+                v.setTextViewText(ids[i], (on ? "■ " : "") + fmtCd(values[i]));
+                v.setInt(ids[i], "setBackgroundResource", on ? R.drawable.bg_btn_on : R.drawable.bg_btn);
+                v.setContentDescription(ids[i], on ? "Cancelar cuenta atrás de " + fmtCd(values[i]) : "Cuenta atrás de " + fmtCd(values[i]));
+                v.setOnClickPendingIntent(ids[i], actionIntent("PRE" + values[i], 10 + i));
+            }
+        }
+        return v;
+    }
+
+    private String plainText() {
+        String s = "Cronómetro " + fmtClock(elapsedNow());
+        int secs = prefs.getInt("countdownSecs", 0);
+        if (secs > 0) {
+            long rem = Math.max(0L, prefs.getLong("countdownEndElapsed", 0L) - SystemClock.elapsedRealtime());
+            long left = (rem + 999L) / 1000L;
+            s += "  •  Cuenta atrás " + (left / 60) + ":" + String.format("%02d", left % 60);
+        } else if (!prefs.getBoolean("running", false)) {
+            s += "  •  En pausa";
+        }
+        return s;
+    }
+
+    private Notification buildNotification() {
+        NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_gym)
+            .setColor(GREEN)
+            .setContentTitle("Gym Timer")
+            .setContentText(plainText())
+            .setStyle(new NotificationCompat.DecoratedCustomViewStyle())
+            .setCustomContentView(buildViews(false))
+            .setCustomBigContentView(buildViews(true))
+            .setCategory("stopwatch")
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE);
+        // Reloj nativo en la cabecera: se ve avanzar aunque el bloqueo solo dibuje la notificación estándar.
+        long nowEl = SystemClock.elapsedRealtime();
+        long wallNow = System.currentTimeMillis();
+        int cdSecs = prefs.getInt("countdownSecs", 0);
+        if (cdSecs > 0) {
+            long rem = Math.max(0L, prefs.getLong("countdownEndElapsed", 0L) - nowEl);
+            b.setShowWhen(true).setUsesChronometer(true).setWhen(wallNow + rem);
+            if (Build.VERSION.SDK_INT >= 24) b.setChronometerCountDown(true);
+        } else if (prefs.getBoolean("running", false)) {
+            b.setShowWhen(true).setUsesChronometer(true).setWhen(wallNow - elapsedNow());
+            if (Build.VERSION.SDK_INT >= 24) b.setChronometerCountDown(false);
+        } else {
+            b.setShowWhen(false);
+        }
+        Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (launch != null) {
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+            b.setContentIntent(PendingIntent.getActivity(this, 0, launch, flags));
+        }
+        return b.build();
+    }
+
+    private void updateNotification() {
+        if (!startedForeground) return;
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            nm.notify(NOTIFICATION_ID, buildNotification());
+        } catch (Exception ignored) {}
+    }
+
+    private void startForegroundCompat(Notification n) {
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            } else {
+                startForeground(NOTIFICATION_ID, n);
+            }
+            startedForeground = true;
+        } catch (Exception e) {
+            stopSelf();
+        }
+    }
+
+    /** Mantiene la CPU despierta solo mientras hay una cuenta atrás (para que el pitido llegue con la pantalla apagada). */
+    private void updateWakeLock() {
+        boolean need = prefs.getInt("countdownSecs", 0) > 0;
+        try {
+            if (need && wakeLock == null) {
+                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "gymtimer:countdown");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire(3L * 60L * 60L * 1000L);
+            } else if (!need && wakeLock != null) {
+                if (wakeLock.isHeld()) wakeLock.release();
+                wakeLock = null;
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void createChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            try { nm.deleteNotificationChannel(OLD_CHANNEL); } catch (Exception ignored) {}
+            // Importancia "predeterminada" sin sonido ni vibración: Android la trata como notificación normal y la muestra en el bloqueo
+            // (las de importancia baja/silenciosas suelen ocultarse allí).
+            NotificationChannel c = new NotificationChannel(CHANNEL, "Cronómetro en pantalla de bloqueo", NotificationManager.IMPORTANCE_DEFAULT);
+            c.setDescription("Cronómetro y cuentas atrás con controles");
+            c.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            c.setSound(null, null);
+            c.enableVibration(false);
+            c.setShowBadge(false);
+            nm.createNotificationChannel(c);
+        }
+    }
+
+    private final Runnable finishRunnable = new Runnable() {
+        @Override public void run() { finishNow(); }
+    };
+
+    /** Apaga el servicio; si justo acaba de sonar el timbre, espera a que termine para no cortarlo. */
+    private void shutdown() {
+        handler.removeCallbacks(ticker);
+        long wait = lastBeepAt + 1900L - SystemClock.elapsedRealtime();
+        handler.removeCallbacks(finishRunnable);
+        if (wait > 0) handler.postDelayed(finishRunnable, wait);
+        else finishNow();
+    }
+
+    private void finishNow() {
+        if (wakeLock != null) {
+            try { if (wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {}
+            wakeLock = null;
+        }
+        if (startedForeground) {
+            if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE);
+            else stopForeground(true);
+            startedForeground = false;
+        }
+        stopSelf();
+    }
+
+    @Override public void onDestroy() {
+        handler.removeCallbacks(ticker);
+        handler.removeCallbacks(finishRunnable);
+        if (wakeLock != null) { try { if (wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {} }
+        if (chime != null) chime.release();
+        super.onDestroy();
+    }
+
+    @Override public IBinder onBind(Intent intent) { return null; }
+}

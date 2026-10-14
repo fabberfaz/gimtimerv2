@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingBottom="6dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="48dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+            <TextView
+                android:id="@+id/sw_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:textSize="10sp"
+                android:textAppearance="@android:style/TextAppearance.Material.Notification.Info" />
+            <Chronometer
+                android:id="@+id/sw_chrono"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:textSize="28sp"
+                android:textStyle="bold"
+                android:textAppearance="@android:style/TextAppearance.Material.Notification.Title" />
+            <TextView
+                android:id="@+id/sw_static"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:textSize="28sp"
+                android:textStyle="bold"
+                android:textAppearance="@android:style/TextAppearance.Material.Notification.Title" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/cd_box"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:orientation="vertical">
+            <TextView
+                android:id="@+id/cd_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:textSize="10sp"
+                android:textAppearance="@android:style/TextAppearance.Material.Notification.Info" />
+            <Chronometer
+                android:id="@+id/cd_chrono"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:textColor="#1FB36B" />
+        </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/btn_toggle"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="4dp"
+            android:padding="9dp"
+            android:background="@drawable/bg_circle"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_play" />
+
+        <ImageButton
+            android:id="@+id/btn_reset"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="6dp"
+            android:padding="10dp"
+            android:background="@drawable/bg_circle"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_reset" />
+    </LinearLayout>
+
+    <ProgressBar
+        android:id="@+id/cd_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="6dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="2dp"
+        android:max="1000"
+        android:progress="0"
+        android:progressTint="#1FB36B" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+        <TextView
+            android:id="@+id/btn_p60"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:background="@drawable/bg_btn"
+            android:singleLine="true"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:textColor="#1FB36B" />
+        <TextView
+            android:id="@+id/btn_p90"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:gravity="center"
+            android:background="@drawable/bg_btn"
+            android:singleLine="true"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:textColor="#1FB36B" />
+        <TextView
+            android:id="@+id/btn_p120"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:gravity="center"
+            android:background="@drawable/bg_btn"
+            android:singleLine="true"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:textColor="#1FB36B" />
+    </LinearLayout>
+</LinearLayout>

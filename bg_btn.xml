@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:minHeight="48dp"
+    android:gravity="center_vertical"
+    android:orientation="horizontal">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+        <TextView
+            android:id="@+id/sw_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:textSize="10sp"
+            android:textAppearance="@android:style/TextAppearance.Material.Notification.Info" />
+        <Chronometer
+            android:id="@+id/sw_chrono"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textAppearance="@android:style/TextAppearance.Material.Notification.Title" />
+        <TextView
+            android:id="@+id/sw_static"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textAppearance="@android:style/TextAppearance.Material.Notification.Title" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/cd_box"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="8dp"
+        android:orientation="vertical">
+        <TextView
+            android:id="@+id/cd_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:textSize="10sp"
+            android:textAppearance="@android:style/TextAppearance.Material.Notification.Info" />
+        <Chronometer
+            android:id="@+id/cd_chrono"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="#1FB36B" />
+    </LinearLayout>
+
+    <ImageButton
+        android:id="@+id/btn_toggle"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="4dp"
+        android:padding="8dp"
+        android:background="@drawable/bg_circle"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_play" />
+
+    <ImageButton
+        android:id="@+id/btn_reset"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="6dp"
+        android:padding="9dp"
+        android:background="@drawable/bg_circle"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_reset" />
+</LinearLayout>

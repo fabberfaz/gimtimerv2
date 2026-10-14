@@ -1,0 +1,77 @@
+package com.personal.gymtimer;
+
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.SystemClock;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+
+@CapacitorPlugin(name = "GymTimerBackground")
+public class GymTimerBackgroundPlugin extends Plugin {
+    @PluginMethod
+    public void syncState(PluginCall call) {
+        Context ctx = getContext();
+        GymTimerForegroundService.ensureFresh(ctx);
+        long elapsedMs = call.getLong("elapsedMs", 0L);
+        boolean running = call.getBoolean("running", false);
+        int secs = call.getInt("countdownSecs", 0);
+        long remaining = call.getLong("countdownRemainingMs", 0L);
+        boolean hasElapsed = call.getBoolean("hasElapsed", false);
+        boolean active = running || secs > 0 || hasElapsed;
+
+        SharedPreferences p = ctx.getSharedPreferences(GymTimerForegroundService.PREFS, Context.MODE_PRIVATE);
+        // Si no hay nada activo y el servicio tampoco lo estaba, no se arranca (evita el aviso de "foreground service sin notificación").
+        if (!active && !p.getBoolean("active", false)) { call.resolve(); return; }
+
+        Intent i = new Intent(ctx, GymTimerForegroundService.class);
+        i.setAction(GymTimerForegroundService.ACTION_SYNC);
+        i.putExtra("elapsedMs", elapsedMs);
+        i.putExtra("running", running);
+        i.putExtra("countdownSecs", secs);
+        i.putExtra("countdownRemainingMs", remaining);
+        i.putExtra("rep60", call.getBoolean("rep60", false));
+        i.putExtra("rep90", call.getBoolean("rep90", false));
+        i.putExtra("rep120", call.getBoolean("rep120", false));
+        i.putExtra("volume", call.getInt("volume", 70));
+        i.putExtra("hasElapsed", hasElapsed);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i);
+            else ctx.startService(i);
+        } catch (Exception e) {
+            call.reject("No se pudo iniciar el servicio: " + e.getMessage());
+            return;
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getState(PluginCall call) {
+        Context ctx = getContext();
+        GymTimerForegroundService.ensureFresh(ctx);
+        SharedPreferences p = ctx.getSharedPreferences(GymTimerForegroundService.PREFS, Context.MODE_PRIVATE);
+        long now = SystemClock.elapsedRealtime();
+        long elapsed = p.getLong("elapsedBase", 0L);
+        boolean running = p.getBoolean("running", false);
+        long start = p.getLong("swStartElapsed", 0L);
+        if (running && start > 0) elapsed += Math.max(0L, now - start);
+        int secs = p.getInt("countdownSecs", 0);
+        long end = p.getLong("countdownEndElapsed", 0L);
+        long remaining = secs > 0 ? Math.max(0L, end - now) : 0L;
+        JSObject out = new JSObject();
+        out.put("elapsedMs", elapsed);
+        out.put("running", running);
+        out.put("countdownSecs", secs);
+        out.put("countdownRemainingMs", remaining);
+        out.put("rep60", p.getBoolean("rep60", false));
+        out.put("rep90", p.getBoolean("rep90", false));
+        out.put("rep120", p.getBoolean("rep120", false));
+        out.put("volume", p.getInt("volume", 70));
+        out.put("active", p.getBoolean("active", false));
+        call.resolve(out);
+    }
+}
